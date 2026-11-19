@@ -64,3 +64,6 @@ require (
 	golang.org/x/tools v0.45.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 )
+
+// Scoped legacy certificate parsing; see third_party/utls/EASYCONNECT_PATCH.md.
+replace github.com/refraction-networking/utls => ./third_party/utls

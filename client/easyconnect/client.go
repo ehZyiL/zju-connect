@@ -38,17 +38,21 @@ type ResourceOptions struct {
 }
 
 type Options struct {
-	Server           string
-	Auth             AuthOptions
-	SessionID        string
-	TestMultiLine    bool
-	Resources        ResourceOptions
-	UnderlayDialer   client.UnderlayDialer
-	TLSKeyLogWriter  io.Writer
-	ChallengeHandler authchallenge.Handler
+	CertificateSHA256 string
+	DisableProxyEnv   bool
+	Server            string
+	Auth              AuthOptions
+	SessionID         string
+	TestMultiLine     bool
+	Resources         ResourceOptions
+	UnderlayDialer    client.UnderlayDialer
+	TLSKeyLogWriter   io.Writer
+	ChallengeHandler  authchallenge.Handler
 }
 
 type Client struct {
+	certificateSHA256 string
+	disableProxyEnv   bool
 	server            string // Example: rvpn.zju.edu.cn:443. No protocol prefix
 	username          string
 	password          string
@@ -97,6 +101,8 @@ func NewClient(options Options) *Client {
 		challengeHandler = authchallenge.NewCLIHandler(authchallenge.CLIOptions{})
 	}
 	c := &Client{
+		certificateSHA256: options.CertificateSHA256,
+		disableProxyEnv:   options.DisableProxyEnv,
 		server:            options.Server,
 		username:          options.Auth.Username,
 		password:          options.Auth.Password,
@@ -295,11 +301,15 @@ func (c *Client) setHTTPTransport(tlsConfig *tls.Config) {
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.DialContext = c.dialContext
+	if c.disableProxyEnv {
+		transport.Proxy = nil
+	}
 	transport.TLSClientConfig = tlsConfig.Clone()
 	if c.tlsKeyLogWriter != nil {
 		transport.TLSClientConfig.KeyLogWriter = c.tlsKeyLogWriter
 	}
 	transport.ResponseHeaderTimeout = easyConnectResponseHeaderTimeout
+	c.configurePinnedHTTP(transport)
 	c.httpClient.Transport = transport
 }
 

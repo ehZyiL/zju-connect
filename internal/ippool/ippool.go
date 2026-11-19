@@ -29,6 +29,9 @@ func NewIPPool[T any](cidr string) (*IPPool[T], error) {
 	}
 
 	ones, bits := ipNet.Mask.Size()
+	if bits != 32 || ones < 1 || ones > 30 {
+		return nil, errors.New("Fake IP pool needs an IPv4 prefix between /1 and /30")
+	}
 	numIPs := uint32(1 << (bits - ones))
 	minIP := binary.BigEndian.Uint32(ipNet.IP)
 
@@ -64,15 +67,22 @@ func (p *IPPool[T]) SetIPDomain(ip net.IP, domain string, res T) error {
 }
 
 func (p *IPPool[T]) GenerateIP(domain string, res T) net.IP {
+	ip, _ := p.AllocateIP(domain, res)
+	return ip
+}
+
+// AllocateIP is the bounded variant used by desktop sessions. Exhaustion is a
+// recoverable error; it must not panic and terminate every active VPN stream.
+func (p *IPPool[T]) AllocateIP(domain string, res T) (net.IP, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if e, ok := p.domainToIP[domain]; ok {
-		return uint32ToIP(e.ipUint)
+		return uint32ToIP(e.ipUint), nil
 	}
 
-	if p.currentIP > p.maxIP {
-		panic("Fake IP range exhausted")
+	if p.currentIP >= p.maxIP {
+		return nil, errors.New("Fake IP range exhausted")
 	}
 
 	newIP := p.currentIP
@@ -86,7 +96,7 @@ func (p *IPPool[T]) GenerateIP(domain string, res T) net.IP {
 	p.ipToDomain[newIP] = newEntry
 	p.currentIP++
 
-	return uint32ToIP(newIP)
+	return uint32ToIP(newIP), nil
 }
 
 func (p *IPPool[T]) GetDomain(ip net.IP) (string, T, bool) {

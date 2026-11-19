@@ -25,6 +25,8 @@ type Resolver struct {
 	dnsResource       map[string][]net.IP
 	dnsResourceCursor sync.Map
 	useRemoteDNS      bool
+	splitDNS          bool
+	internalSuffixes  []string
 
 	dnsCache *cache.Cache
 
@@ -39,7 +41,8 @@ type Resolver struct {
 	resolutionClosed  bool
 	activeResolutions atomic.Int64
 
-	closeOnce sync.Once
+	closeOnce    sync.Once
+	wireExchange dnsExchangeFunc
 }
 
 const remoteDNSTCPFallbackDelay = 300 * time.Millisecond
@@ -70,6 +73,7 @@ var (
 	ContextKeyFakeIP          = contextKey("FAKE_IP")
 	ContextKeyResolveHost     = contextKey("RESOLVE_HOST")
 	ContextKeyDomainResource  = contextKey("DOMAIN_RESOURCE")
+	ContextKeyDomainRule      = contextKey("DOMAIN_RULE")
 	ContextKeyIPResource      = contextKey("IP_RESOURCE")
 	contextKeyIgnoreTCPPrefL3 = contextKey("IGNORE_TCP_PREF_L3")
 )
@@ -107,6 +111,7 @@ func (r *Resolver) Resolve(ctx context.Context, host string) (resCtx context.Con
 		domainResourceFound = true
 		domainResources = resources
 		ctx = context.WithValue(ctx, ContextKeyDomainResource, resources)
+		ctx = context.WithValue(ctx, ContextKeyDomainRule, domain)
 		log.DebugPrintf("Domain resource found: %s", domain)
 	}
 
@@ -132,13 +137,22 @@ func (r *Resolver) Resolve(ctx context.Context, host string) (resCtx context.Con
 
 		if fakeIPValue := ctx.Value(ContextKeyFakeIP); fakeIPValue != nil {
 			if domainResourceFound {
-				ip := r.IPPool.GenerateIP(host, domainResources)
+				ip, err := r.IPPool.AllocateIP(host, domainResources)
+				if err != nil {
+					return ctx, nil, err
+				}
 				log.Printf("%s -> %s (Fake IP)", host, ip.String())
 				return ctx, ip, nil
 			}
 		}
 	}
 
+	if r.splitDNS && !r.MustUseVPNDNS(host) {
+		return r.ResolveWithSecondaryDNS(ctx, host)
+	}
+	if r.splitDNS && !r.useRemoteDNS {
+		return ctx, nil, errors.New("no VPN DNS configured for internal domain")
+	}
 	if r.useRemoteDNS {
 		ip, err := r.resolveCoordinated(ctx, host, func(lookupCtx context.Context) (net.IP, error) {
 			return r.resolveRemote(lookupCtx, host)
@@ -146,6 +160,9 @@ func (r *Resolver) Resolve(ctx context.Context, host string) (resCtx context.Con
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx, nil, ctx.Err()
+			}
+			if r.splitDNS {
+				return ctx, nil, err
 			}
 			log.Printf("Resolve IPv4 addr failed using remote DNS: %s, using secondary DNS instead", host)
 			return r.ResolveWithSecondaryDNS(ctx, host)
@@ -377,6 +394,10 @@ func (r *Resolver) Close() {
 	})
 }
 
+// FakeIPPrefix is also excluded from the desktop capture pool. The resolver
+// may synthesize addresses here even when the host has no route for this pool.
+const FakeIPPrefix = "198.18.0.0/16"
+
 func NewResolver(stack stack.Stack, remoteDNSServer, secondaryDNSServer string, ttl uint64, domainResources client.DomainResources, dnsResource map[string][]net.IP, useRemoteDNS bool) *Resolver {
 	//domainSuffixTree := domainsuffixtrie.NewDomainSuffixTrie[bool]()
 	//for domain := range domainResource {
@@ -384,6 +405,7 @@ func NewResolver(stack stack.Stack, remoteDNSServer, secondaryDNSServer string, 
 	//}
 
 	resolver := &Resolver{
+		wireExchange: tunnelDNSExchange(stack, remoteDNSServer),
 		remoteUDPResolver: &net.Resolver{
 			PreferGo: true,
 			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -422,10 +444,50 @@ func NewResolver(stack stack.Stack, remoteDNSServer, secondaryDNSServer string, 
 		}
 	}
 	var err error
-	resolver.IPPool, err = ippool.NewIPPool[[]client.DomainResource]("198.18.0.0/16")
+	resolver.IPPool, err = ippool.NewIPPool[[]client.DomainResource](FakeIPPrefix)
 	if err != nil {
 		log.Fatalf("Create Fake IP Pool failed: %v", err)
 	}
 
 	return resolver
+}
+
+// EnableSplitDNS is configured before serving. Public domains use host DNS;
+// internal suffixes/resource domains never fall back to a public resolver.
+func (r *Resolver) EnableSplitDNS(suffixes []string) {
+	r.splitDNS = true
+	r.internalSuffixes = append([]string(nil), suffixes...)
+}
+func (r *Resolver) MustUseVPNDNS(host string) bool {
+	if !r.splitDNS {
+		return false
+	}
+	host = normalizeHostname(host)
+	if _, _, found := matchDomainResource(r.domainIndex, host); found {
+		return true
+	}
+	for _, suffix := range r.internalSuffixes {
+		suffix = strings.Trim(normalizeHostname(suffix), ".")
+		if host == suffix || strings.HasSuffix(host, "."+suffix) {
+			return true
+		}
+	}
+	_, found := r.dnsResource[host]
+	return found
+}
+
+// DomainContext restores the original queried name after a transparent
+// synthetic-address hop. It does not attach a domain's authority to a real IP.
+// The dialer still checks the requested transport and port for every stream.
+func (r *Resolver) DomainContext(ctx context.Context, host string) context.Context {
+	host = normalizeHostname(host)
+	ctx = context.WithValue(ctx, ContextKeyResolveHost, host)
+	ctx = context.WithValue(ctx, ContextKeyDomainResource, []client.DomainResource(nil))
+	ctx = context.WithValue(ctx, ContextKeyDomainRule, "")
+	ctx = context.WithValue(ctx, ContextKeyIPResource, client.IPResource{})
+	if domain, resources, found := matchDomainResource(r.domainIndex, host); found {
+		ctx = context.WithValue(ctx, ContextKeyDomainResource, resources)
+		ctx = context.WithValue(ctx, ContextKeyDomainRule, domain)
+	}
+	return ctx
 }

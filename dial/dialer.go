@@ -25,6 +25,19 @@ import (
 // client does and keeps the tunnel alive.
 var ErrACLDenied = errors.New("destination not in sangfor IPResources whitelist (would trigger tunnel SHUTDOWN)")
 
+type requireVPNKey struct{}
+
+// DialVPNIPPort is used for synthetic internal addresses. Unlike the ordinary
+// split dialer, an unmatched port is an error, never a new direct connection.
+func (d *Dialer) DialVPNIPPort(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	p, perr := strconv.Atoi(port)
+	if err != nil || perr != nil || p < 1 || p > 65535 || net.ParseIP(host).To4() == nil || (network != "tcp" && network != "udp") {
+		return nil, ErrACLDenied
+	}
+	return d.DialIPPort(context.WithValue(ctx, requireVPNKey{}, true), network, addr)
+}
+
 type Dialer struct {
 	stack                stack.Stack
 	resolver             *resolve.Resolver
@@ -37,6 +50,7 @@ type Dialer struct {
 
 // dialDirectIP need have a `hostAddr` parameter, which will be passed to PROXY. But `hostAddr` maybe empty, ipAddr never be empty.
 func (d *Dialer) dialDirectIP(ctx context.Context, network, ipAddr string, hostAddr string) (net.Conn, error) {
+	reportDecision(ctx, Decision{Route: "direct", Rule: "default", Address: ipAddr})
 	// only support http proxy now and tcp network type
 	if d.dialDirectHTTPProxy != "" && network == "tcp" {
 		usedAddr := ipAddr
@@ -57,6 +71,7 @@ func (d *Dialer) dialDirectIP(ctx context.Context, network, ipAddr string, hostA
 }
 
 func (d *Dialer) dialDirectHost(ctx context.Context, network, hostAddr string) (net.Conn, error) {
+	reportDecision(ctx, Decision{Route: "direct", Rule: "default", Address: hostAddr})
 	// only support http proxy now and tcp network type
 	if d.dialDirectHTTPProxy != "" && network == "tcp" {
 		return d.dialDirectWithHTTPProxy(ctx, hostAddr)
@@ -105,7 +120,8 @@ func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Co
 		return d.dialDirectIP(ctx, network, ipAddr, hostAddr)
 	}
 
-	if d.alwaysUseVPN {
+	requireVPN, _ := ctx.Value(requireVPNKey{}).(bool)
+	if d.alwaysUseVPN || requireVPN {
 		useVPN = true
 	}
 
@@ -113,6 +129,7 @@ func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Co
 	// run both resource lookups (even if useVPN was already forced true by
 	// alwaysUseVPN) so we can enforce the server-side ACL client-side.
 	matchedResource := false
+	decision := Decision{Route: "vpn", Rule: "forced", Address: ipAddr}
 
 	if res := ctx.Value(resolve.ContextKeyDomainResource); res != nil {
 		var resource client.DomainResource
@@ -124,6 +141,9 @@ func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Co
 			resource, matched = matchDomainResourceForTunnel([]client.DomainResource{resources}, network, port)
 		}
 		if matched {
+			decision.Rule = "domain_resource"
+			decision.Domain, _ = ctx.Value(resolve.ContextKeyDomainRule).(string)
+			decision.PortMin, decision.PortMax, decision.Protocol = resource.PortMin, resource.PortMax, resource.Protocol
 			ctx = context.WithValue(ctx, resolve.ContextKeyDomainResource, resource)
 			useVPN = true
 			matchedResource = true
@@ -132,6 +152,9 @@ func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Co
 
 	if !matchedResource && d.ipResources != nil {
 		if resource, matched := matchIPResourceForTunnel(d.resourceIndex, target.IP, network, port); matched {
+			decision.Rule = "ip_resource"
+			decision.IPMin, decision.IPMax = resource.IPMin.String(), resource.IPMax.String()
+			decision.PortMin, decision.PortMax, decision.Protocol = resource.PortMin, resource.PortMax, resource.Protocol
 			ctx = context.WithValue(ctx, resolve.ContextKeyIPResource, resource)
 			useVPN = true
 			matchedResource = true
@@ -146,13 +169,15 @@ func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Co
 	// Skipped when IPResources are unavailable (parse_resource=false), since
 	// we have no whitelist to enforce. An empty but non-nil slice still means
 	// resources were parsed and no IP destinations are allowed.
-	if useVPN && !matchedResource && d.ipResources != nil {
+	if useVPN && !matchedResource && (d.ipResources != nil || requireVPN) {
+		reportDecision(ctx, Decision{Route: "blocked", Rule: "acl", Address: ipAddr})
 		log.Printf("ACL: refusing %s/%s — not in sangfor IPResources whitelist (would trigger tunnel SHUTDOWN)", ipAddr, network)
 		return nil, ErrACLDenied
 	}
 
 	if useVPN {
 		if network == "tcp" {
+			reportDecision(ctx, decision)
 			log.Printf("%s -> VPN", ipAddr)
 
 			return d.stack.DialTCP(ctx, &net.TCPAddr{
@@ -160,6 +185,7 @@ func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Co
 				Port: port,
 			})
 		} else if network == "udp" {
+			reportDecision(ctx, decision)
 			log.Printf("%s -> VPN", ipAddr)
 
 			return d.stack.DialUDP(ctx, &net.UDPAddr{
@@ -217,6 +243,9 @@ func (d *Dialer) Dial(ctx context.Context, network string, addr string) (net.Con
 	if ip = net.ParseIP(host); ip == nil {
 		ctx, ip, err = d.resolver.Resolve(ctx, host)
 		if err != nil {
+			if d.resolver.MustUseVPNDNS(host) {
+				return nil, err
+			}
 			return d.dialDirectHost(ctx, network, addr)
 		}
 
