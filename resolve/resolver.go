@@ -14,6 +14,7 @@ import (
 	"github.com/mythologyli/zju-connect/log"
 	"github.com/mythologyli/zju-connect/stack"
 	"github.com/patrickmn/go-cache"
+	"golang.org/x/net/idna"
 )
 
 type Resolver struct {
@@ -340,7 +341,17 @@ func (r *Resolver) cacheFirstIP(host string, ips []net.IP, err error) (net.IP, e
 }
 
 func normalizeHostname(host string) string {
-	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	prefix := ""
+	if strings.HasPrefix(host, "*.") {
+		prefix, host = "*.", host[2:]
+	} else if strings.HasPrefix(host, ".") {
+		prefix, host = ".", host[1:]
+	}
+	if ascii, err := idna.Lookup.ToASCII(host); err == nil {
+		return prefix + ascii
+	}
+	return prefix + host
 }
 
 func (r *Resolver) RemoteUDPResolver() (*net.Resolver, error) {
@@ -404,6 +415,10 @@ func NewResolver(stack stack.Stack, remoteDNSServer, secondaryDNSServer string, 
 	//	_ = domainSuffixTree.AddDomainSuffix(domain, true)
 	//}
 
+	normalizedDNS := make(map[string][]net.IP, len(dnsResource))
+	for name, ips := range dnsResource {
+		normalizedDNS[normalizeHostname(name)] = append([]net.IP(nil), ips...)
+	}
 	resolver := &Resolver{
 		wireExchange: tunnelDNSExchange(stack, remoteDNSServer),
 		remoteUDPResolver: &net.Resolver{
@@ -426,7 +441,7 @@ func NewResolver(stack stack.Stack, remoteDNSServer, secondaryDNSServer string, 
 		},
 		ttl:          ttl,
 		domainIndex:  newDomainResourceIndex(domainResources),
-		dnsResource:  dnsResource,
+		dnsResource:  normalizedDNS,
 		dnsCache:     cache.New(time.Duration(ttl)*time.Second, time.Duration(ttl)*2*time.Second),
 		useRemoteDNS: useRemoteDNS,
 	}

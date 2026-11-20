@@ -56,3 +56,15 @@ func TestResolveVPNPreservesOriginalDomainAuthorization(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestResolveVPNNormalizesIDNAForRulesAndStaticDNS(t *testing.T) {
+	r := NewResolver(nil, "", "", 60, client.DomainResources{"*.例子.测试": {{Protocol: "tcp", PortMin: 443, PortMax: 443}}}, map[string][]net.IP{"应用.例子.测试.": {net.ParseIP("10.0.0.8")}}, false)
+	defer r.Close()
+	ctx, ip, err := r.ResolveVPN(context.Background(), "应用.例子.测试.")
+	if err != nil || !ip.Equal(net.ParseIP("10.0.0.8")) {
+		t.Fatalf("%v %v", ip, err)
+	}
+	if rules, _ := ctx.Value(ContextKeyDomainResource).([]client.DomainResource); len(rules) != 1 {
+		t.Fatal("IDNA wildcard lost authorization")
+	}
+}
