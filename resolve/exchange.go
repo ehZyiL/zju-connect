@@ -17,7 +17,7 @@ type dnsExchangeFunc func(context.Context, string, *dns.Msg) (*dns.Msg, error)
 // limited to the same internal names as Resolve: public queries must remain on
 // the host's original resolver, never recurse through a future local DNS link.
 // Unlike Resolve's single-IP cache, this path does not cache rewritten answers.
-func (r *Resolver) ExchangeInternal(ctx context.Context, q *dns.Msg) (*dns.Msg, error) {
+func (r *Resolver) exchangeInternalOne(ctx context.Context, q *dns.Msg, requireInternal bool) (*dns.Msg, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -43,7 +43,7 @@ func (r *Resolver) ExchangeInternal(ctx context.Context, q *dns.Msg) (*dns.Msg, 
 		return answer(dns.RcodeRefused), nil
 	}
 	host := normalizeHostname(question.Name)
-	if !r.MustUseVPNDNS(host) {
+	if requireInternal && !r.MustUseVPNDNS(host) {
 		return answer(dns.RcodeRefused), nil
 	}
 	if ips, ok := r.dnsResource[host]; ok && (question.Qtype == dns.TypeA || question.Qtype == dns.TypeAAAA) {
