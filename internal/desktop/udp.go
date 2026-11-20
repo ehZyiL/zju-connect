@@ -12,9 +12,7 @@ import (
 
 const (
 	maxUDPAssociations = 128
-	// Leave room for the largest SOCKS5 header, including a 255-byte domain.
-	maxUDPPayload = 65507 - 262
-	udpIdle       = 60 * time.Second
+	udpIdle            = 60 * time.Second
 )
 
 // Each private association is pinned to one local UDP socket and one VPN
@@ -64,6 +62,11 @@ func serveStrictUDP(ctx context.Context, writer io.Writer, req *socks5.Request, 
 		return err
 	}
 	target := first.DstAddr.String()
+	// The private protocol opens a target with a single marker byte; never
+	// send that marker to the business service. Normal packets follow ready.
+	if len(first.Data) != 1 || first.Data[0] != 0 {
+		return io.ErrUnexpectedEOF
+	}
 	dialCtx, finish := context.WithTimeout(life, 10*time.Second)
 	upstream, err := dial(dialCtx, "udp", target)
 	finish()
@@ -83,7 +86,7 @@ func serveStrictUDP(ctx context.Context, writer io.Writer, req *socks5.Request, 
 		_ = upstream.SetDeadline(until)
 	}
 	refresh()
-	if _, err := upstream.Write(first.Data); err != nil {
+	if _, err := writer.Write([]byte{0}); err != nil {
 		return err
 	}
 	responseDone := make(chan struct{})
@@ -99,7 +102,7 @@ func serveStrictUDP(ctx context.Context, writer io.Writer, req *socks5.Request, 
 			if err != nil {
 				return
 			}
-			if n > maxUDPPayload {
+			if n > MaxUDPPayload {
 				continue
 			}
 			refresh()
@@ -127,14 +130,18 @@ func readStrictDatagram(relay *net.UDPConn, buffer []byte, target string) (statu
 		if err != nil {
 			return statute.Datagram{}, err
 		}
-		if n < 10 || buffer[0] != 0 || buffer[1] != 0 || buffer[2] != 0 {
+		if n < 4 || buffer[0] != 0 || buffer[1] != 0 || buffer[2] != 0 {
 			continue
 		}
-		packet, err := statute.ParseDatagram(buffer[:n])
-		if err != nil || len(packet.Data) > maxUDPPayload || packet.DstAddr.Port == 0 || packet.DstAddr.AddrType == statute.ATYPIPv6 {
+		address, data, err := DecodeUDPFrame(buffer[:n])
+		if err != nil {
 			continue
 		}
-		if target != "" && packet.DstAddr.String() != target {
+		if target != "" && address != target {
+			continue
+		}
+		packet, err := statute.NewDatagram(address, data)
+		if err != nil {
 			continue
 		}
 		return packet, nil

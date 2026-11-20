@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"strings"
@@ -76,7 +77,7 @@ func udpAssociate(t *testing.T, server *socks5.Server, endpoint *net.UDPAddr, pa
 	if got := exchange([]byte{5, 1, 2}); got != [2]byte{5, 2} {
 		t.Fatalf("method reply: %v", got)
 	}
-	auth := append([]byte{1, 3, 'h', 'u', 'b', byte(len(password))}, password...)
+	auth := append([]byte{1, 5, 'h', 'u', 'b', '/', '1', byte(len(password))}, password...)
 	if got := exchange(auth); got != [2]byte{1, 0} {
 		return conn, nil
 	}
@@ -117,7 +118,8 @@ func TestPrivateUDPAssociationStrictRouteAndLifetime(t *testing.T) {
 	a := newCaptureAliases(r, resources, dial.NewDialer(s, r, resources, false, ""))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	c := &control{ctx: ctx}
+	messages := make(flowMessages, 32)
+	c := &control{ctx: ctx, cancel: cancel, encoder: json.NewEncoder(messages)}
 	cfg := Config{SocksUser: "hub", SocksPassword: strings.Repeat("a", 64)}
 	strict := newDesktopVPNOnlySOCKS(c, cfg, a, true)
 	peer := app.LocalAddr().(*net.UDPAddr)
@@ -132,6 +134,7 @@ func TestPrivateUDPAssociationStrictRouteAndLifetime(t *testing.T) {
 	if _, relay := udpAssociate(t, strict, &net.UDPAddr{IP: peer.IP}, cfg.SocksPassword); relay != nil {
 		t.Fatal("allowed wildcard UDP source port")
 	}
+	prepareTestFlow(t, c, messages, "1")
 	control, relay := udpAssociate(t, strict, peer, cfg.SocksPassword)
 	if relay == nil || !relay.IP.IsLoopback() {
 		t.Fatal("no private relay")
@@ -149,6 +152,14 @@ func TestPrivateUDPAssociationStrictRouteAndLifetime(t *testing.T) {
 	}
 	send(other, "10.32.0.9:9001", "foreign client", 0)
 	send(app, "10.32.0.9:9001", "fragment", 1)
+	send(app, "a.corp.test:9000", string([]byte{0}), 0)
+	var ready [1]byte
+	if _, err := io.ReadFull(control, ready[:]); err != nil || ready[0] != 0 {
+		t.Fatalf("no target confirmation: %v", err)
+	}
+	if result := <-messages; result.Type != "flow_result" || result.RequestID != "1" || result.Flow == nil || result.Flow.Route != "vpn" || result.Flow.Failure != "" {
+		t.Fatalf("missing correlated target authorization: %+v", result)
+	}
 	send(app, "a.corp.test:9000", "first", 0)
 	buf := make([]byte, 256)
 	n, upstream, err := backend.ReadFromUDP(buf)

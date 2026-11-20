@@ -2,6 +2,13 @@
 // Keep protocol.go identical to aTrustHub/internal/workeripc/protocol.go.
 package desktop
 
+import (
+	"encoding/binary"
+	"errors"
+	"net"
+	"strconv"
+)
+
 const Version = 6
 const MaxMessage = 2 << 20
 const MaxDNSMessage = 65535
@@ -9,7 +16,9 @@ const MaxDNSRequests = 16
 const MaxFlowRequests = 128
 
 // StrictUDP is optional and advertised only for an IPv4 L3 VPN session.
-const StrictUDP = "strict_udp"
+const StrictUDP = "strict_udp_ready"
+
+const MaxUDPPayload = 65507 - 262 // Maximum IPv4 UDP payload minus the largest SOCKS header.
 
 // FlowResult reports a single TCP dial, not an HTTP/database operation. Route
 // is the attempted path on failure. No upstream error text or credentials.
@@ -118,4 +127,35 @@ type Message struct {
 	FlowReporting bool              `json:"flowReporting,omitempty"`
 	Flow          *FlowResult       `json:"flow,omitempty"`
 	Certificate   *CertificateInfo  `json:"certificate,omitempty"`
+}
+
+// DecodeUDPFrame accepts a complete, unfragmented IPv4/domain SOCKS datagram.
+// Payload may be empty; it aliases the supplied packet until the next read.
+func DecodeUDPFrame(packet []byte) (string, []byte, error) {
+	invalid := func() (string, []byte, error) { return "", nil, errors.New("invalid private UDP datagram") }
+	if len(packet) < 4 || packet[0] != 0 || packet[1] != 0 || packet[2] != 0 {
+		return invalid()
+	}
+	var host string
+	offset := 0
+	switch packet[3] {
+	case 1:
+		if len(packet) < 10 {
+			return invalid()
+		}
+		host, offset = net.IP(packet[4:8]).String(), 8
+	case 3:
+		if len(packet) < 5 || packet[4] == 0 || len(packet) < 7+int(packet[4]) {
+			return invalid()
+		}
+		offset = 5 + int(packet[4])
+		host = string(packet[5:offset])
+	default:
+		return invalid()
+	}
+	port := binary.BigEndian.Uint16(packet[offset : offset+2])
+	if port == 0 || len(packet)-offset-2 > MaxUDPPayload {
+		return invalid()
+	}
+	return net.JoinHostPort(host, strconv.Itoa(int(port))), packet[offset+2:], nil
 }

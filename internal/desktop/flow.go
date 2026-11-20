@@ -68,7 +68,12 @@ func newDesktopVPNOnlySOCKS(c *control, cfg Config, aliases *captureAliases, all
 		socks5.WithResolver(deferredFlowResolver{}),
 		socks5.WithRule(&socks5.PermitCommand{EnableConnect: true, EnableAssociate: allowUDP}),
 		socks5.WithAssociateHandle(func(_ context.Context, writer io.Writer, req *socks5.Request) error {
-			return serveStrictUDP(c.ctx, writer, req, udpFlows, aliases.dialStrictVPNTarget)
+			if flowID(req.AuthContext.Payload["username"], cfg.SocksUser) == "" {
+				return socks5.SendReply(writer, statute.RepRuleFailure, nil)
+			}
+			return serveStrictUDP(c.ctx, writer, req, udpFlows, func(ctx context.Context, network, target string) (net.Conn, error) {
+				return desktopDialContext(ctx, c, cfg, req, network, target, aliases.dialStrictVPNFlow)
+			})
 		}),
 		socks5.WithConnectHandle(func(_ context.Context, writer io.Writer, req *socks5.Request) error {
 			addr := req.DestAddr.String()
@@ -115,19 +120,33 @@ func newDesktopVPNOnlySOCKS(c *control, cfg Config, aliases *captureAliases, all
 }
 
 func desktopDial(c *control, cfg Config, req *socks5.Request, network, addr string, dialFlow func(context.Context, string, string) (net.Conn, FlowResult, error)) (net.Conn, error) {
+	return desktopDialContext(c.ctx, c, cfg, req, network, addr, dialFlow)
+}
+
+func desktopDialContext(parent context.Context, c *control, cfg Config, req *socks5.Request, network, addr string, dialFlow func(context.Context, string, string) (net.Conn, FlowResult, error)) (net.Conn, error) {
 	id := flowID(req.AuthContext.Payload["username"], cfg.SocksUser)
 	ctx, finish, err := c.beginFlow(id)
 	result := FlowResult{Target: addr, Route: "unknown"}
 	var conn net.Conn
 	if err == nil {
-		conn, result, err = dialFlow(ctx, network, addr)
-		if err == nil && ctx.Err() != nil {
-			err = ctx.Err()
+		dialCtx, cancel := context.WithCancel(ctx)
+		stop := context.AfterFunc(parent, cancel)
+		if parent.Err() != nil {
+			cancel()
+		}
+		conn, result, err = dialFlow(dialCtx, network, addr)
+		if err == nil && (dialCtx.Err() != nil || parent.Err() != nil) {
+			err = context.Canceled
+			if ctx.Err() != nil {
+				err = ctx.Err()
+			}
 			if conn != nil {
 				conn.Close()
 				conn = nil
 			}
 		}
+		stop()
+		cancel()
 		// A dial deadline governs connection establishment, never stream life.
 		finish()
 	}
