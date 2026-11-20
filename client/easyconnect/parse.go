@@ -141,7 +141,12 @@ func (c *Client) parseResources(resources string) error {
 				var ipMin net.IP
 				var ipMax net.IP
 				var hostPort string
-				if strings.Contains(host, "~") {
+				if prefix, err := netaddr.ParseIPPrefix(host); err == nil && prefix.IP().IPAddr().IP.To4() == nil {
+					// Keep IPv6 ownership visible to the capture guard. Only
+					// the declared range is retained; this grants no routing capability.
+					ipRange := prefix.Range()
+					ipMin, ipMax = ipRange.From().IPAddr().IP, ipRange.To().IPAddr().IP
+				} else if strings.Contains(host, "~") {
 					ipList := strings.Split(host, "~")
 					if len(ipList) != 2 {
 						log.DebugPrintf("Invalid IP range: %s", host)
@@ -159,7 +164,12 @@ func (c *Client) parseResources(resources string) error {
 						continue
 					}
 
-					ipSetBuilder.AddRange(netaddr.IPRangeFrom(netaddr.MustParseIP(ipList[0]), netaddr.MustParseIP(ipList[1])))
+					if (ipMin.To4() == nil) != (ipMax.To4() == nil) {
+						continue
+					}
+					if ipMin.To4() != nil {
+						ipSetBuilder.AddRange(netaddr.IPRangeFrom(netaddr.MustParseIP(ipMin.String()), netaddr.MustParseIP(ipMax.String())))
+					}
 					log.DebugPrintf("Add IP range: %s ~ %s, Port range: %d ~ %d, [%s]", ipList[0], ipList[1], portMin, portMax, protocol)
 				} else {
 					if strings.Contains(host, "//") {
@@ -167,10 +177,20 @@ func (c *Client) parseResources(resources string) error {
 					}
 					host = strings.Split(host, "/")[0]
 					host = strings.ReplaceAll(host, "*", "")
-					if strings.Contains(host, ":") {
-						host, hostPort, err = net.SplitHostPort(host)
+					if literal, bracketed := strings.CutPrefix(host, "["); bracketed && strings.HasSuffix(literal, "]") {
+						host = strings.TrimSuffix(literal, "]")
 					}
 					ipMin = net.ParseIP(host)
+					if ipMin == nil && strings.Contains(host, ":") {
+						host, hostPort, err = net.SplitHostPort(host)
+						if err != nil || host == "" {
+							continue
+						}
+						ipMin = net.ParseIP(host)
+					}
+					if host == "" {
+						continue
+					}
 					if ipMin == nil {
 						isDomain = true
 
@@ -186,7 +206,9 @@ func (c *Client) parseResources(resources string) error {
 							portMax = hostPortInt
 						}
 
-						ipSetBuilder.Add(netaddr.MustParseIP(host))
+						if ipMin.To4() != nil {
+							ipSetBuilder.Add(netaddr.MustParseIP(ipMin.String()))
+						}
 						log.DebugPrintf("Add IP: %s, Port range: %d ~ %d, [%s]", host, portMin, portMax, protocol)
 					}
 				}
@@ -225,7 +247,7 @@ func (c *Client) parseResources(resources string) error {
 			continue
 		}
 
-		dnsParts := strings.Split(dnsStr, ":")
+		dnsParts := strings.SplitN(dnsStr, ":", 3)
 		if len(dnsParts) != 3 {
 			continue
 		}
