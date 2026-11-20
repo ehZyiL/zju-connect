@@ -78,6 +78,18 @@ type Config struct {
 	SocksPassword     string   `json:"socksPassword"`
 }
 
+// CertificateInfo describes an observed gateway certificate, not a verified
+// identity. certificate_probe is an optional, credential-free one-shot request;
+// it leaves the v5 login/session protocol unchanged.
+type CertificateInfo struct {
+	SHA256       string `json:"sha256"`
+	Subject      string `json:"subject"`
+	Issuer       string `json:"issuer"`
+	NotBefore    int64  `json:"notBefore"`
+	NotAfter     int64  `json:"notAfter"`
+	MalformedSAN bool   `json:"malformedSAN,omitempty"`
+}
+
 type Message struct {
 	Version       int               `json:"version"`
 	Session       string            `json:"session"`
@@ -99,4 +111,5 @@ type Message struct {
 	Resources     *ResourceSnapshot `json:"resources,omitempty"`
 	FlowReporting bool              `json:"flowReporting,omitempty"`
 	Flow          *FlowResult       `json:"flow,omitempty"`
+	Certificate   *CertificateInfo  `json:"certificate,omitempty"`
 }

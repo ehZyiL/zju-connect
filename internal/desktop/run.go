@@ -31,7 +31,13 @@ func Run(input io.Reader, output io.Writer) (exitCode int) {
 		return 1
 	}
 	var first Message
-	if json.Unmarshal(scanner.Bytes(), &first) != nil || first.Version != Version || first.Type != "start" || first.Session == "" || first.Config == nil {
+	if json.Unmarshal(scanner.Bytes(), &first) != nil || first.Version != Version || first.Session == "" {
+		return 1
+	}
+	if first.Type == "certificate_probe" && first.Config == nil {
+		return probeCertificate(first, output)
+	}
+	if first.Type != "start" || first.Config == nil {
 		return 1
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -186,9 +192,9 @@ func safeError(err error) string {
 	s := err.Error()
 	switch {
 	case strings.Contains(s, "fingerprint"):
-		return "网关证书 SHA256 与配置的指纹不一致，连接已终止"
+		return "网关证书与已信任的证书不同，连接已终止；请查看证书并核实变更"
 	case strings.Contains(s, "SAN dNSName is malformed"):
-		return "网关证书包含无效的域名字段；请在高级选项填写经确认的证书 SHA256 指纹后重试"
+		return "网关证书的域名字段格式不兼容；请点击「查看网关证书」，确认来源后重试"
 	case strings.Contains(s, "资源配置不可用"):
 		return "网关未返回可用资源配置，连接已终止"
 	case errors.Is(err, context.Canceled):
