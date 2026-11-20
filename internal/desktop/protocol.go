@@ -8,6 +8,9 @@ const MaxDNSMessage = 65535
 const MaxDNSRequests = 16
 const MaxFlowRequests = 128
 
+// StrictUDP is optional and advertised only for an IPv4 L3 VPN session.
+const StrictUDP = "strict_udp"
+
 // FlowResult reports a single TCP dial, not an HTTP/database operation. Route
 // is the attempted path on failure. No upstream error text or credentials.
 type FlowResult struct {

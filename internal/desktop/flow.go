@@ -61,11 +61,15 @@ func newDesktopSOCKS(c *control, cfg Config, aliases *captureAliases) *socks5.Se
 	)
 }
 
-func newDesktopVPNOnlySOCKS(c *control, cfg Config, aliases *captureAliases) *socks5.Server {
+func newDesktopVPNOnlySOCKS(c *control, cfg Config, aliases *captureAliases, allowUDP bool) *socks5.Server {
+	udpFlows := make(chan struct{}, maxUDPAssociations)
 	return socks5.NewServer(
 		socks5.WithAuthMethods([]socks5.Authenticator{socks5.UserPassAuthenticator{Credentials: flowCredentials{cfg.SocksUser, cfg.SocksPassword}}}),
 		socks5.WithResolver(deferredFlowResolver{}),
-		socks5.WithRule(&socks5.PermitCommand{EnableConnect: true}),
+		socks5.WithRule(&socks5.PermitCommand{EnableConnect: true, EnableAssociate: allowUDP}),
+		socks5.WithAssociateHandle(func(_ context.Context, writer io.Writer, req *socks5.Request) error {
+			return serveStrictUDP(c.ctx, writer, req, udpFlows, aliases.dialStrictVPNTarget)
+		}),
 		socks5.WithConnectHandle(func(_ context.Context, writer io.Writer, req *socks5.Request) error {
 			addr := req.DestAddr.String()
 			conn, err := desktopDial(c, cfg, req, "tcp", addr, aliases.dialStrictVPNFlow)
@@ -217,8 +221,8 @@ func (a *captureAliases) dialStrictVPNFlow(ctx context.Context, network, address
 }
 
 func (a *captureAliases) dialStrictVPNTarget(ctx context.Context, network, address string) (net.Conn, error) {
-	if network != "tcp" {
-		return nil, errors.New("desktop proxy supports TCP only")
+	if network != "tcp" && network != "udp" {
+		return nil, dial.ErrACLDenied
 	}
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
@@ -273,6 +277,9 @@ func (a *captureAliases) DialStrictVPN(ctx context.Context, network, address str
 		}
 		ctx = a.resolver.DomainContext(ctx, target.Name)
 		return a.dialer.DialVPNIPPort(ctx, network, net.JoinHostPort(target.IP.String(), port))
+	}
+	if network == "udp" && netip.MustParsePrefix(CaptureAliasBlock).Contains(ip.Unmap()) {
+		return nil, errCaptureAlias
 	}
 	return a.dialer.DialVPNIPPort(ctx, network, address)
 }

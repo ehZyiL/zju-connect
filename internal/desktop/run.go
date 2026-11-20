@@ -142,7 +142,8 @@ func serve(c *control, cfg Config) error {
 		remoteDNS, _ = vpn.DNSServer()
 	}
 	var vpnStack stack.Stack
-	if vpn.CanUseTCPTunnel() {
+	allowUDP := !vpn.CanUseTCPTunnel()
+	if !allowUDP {
 		vpnStack, err = tcptunnel.NewStack(vpn)
 	} else {
 		vpnStack, err = gvisor.NewStack(vpn)
@@ -179,15 +180,19 @@ func serve(c *control, cfg Config) error {
 	defer vpnListener.Close()
 
 	server := newDesktopSOCKS(c, cfg, aliases)
-	vpnServer := newDesktopVPNOnlySOCKS(c, cfg, aliases)
+	vpnServer := newDesktopVPNOnlySOCKS(c, cfg, aliases, allowUDP)
 
 	ip, _ := vpn.IP()
 	resources := resourceSnapshot(ipResources, domains, dnsResources, cfg, remoteDNS, vpn.CanUseTCPTunnel())
+	capabilities := []string{"strict_vpn", "flow_cancel", "flow_prepare"}
+	if allowUDP {
+		capabilities = append(capabilities, StrictUDP)
+	}
 	if err := c.emit(Message{
 		Type:          "ready",
 		Address:       listener.Addr().String(),
 		VPNAddress:    vpnListener.Addr().String(),
-		Capabilities:  []string{"strict_vpn", "flow_cancel", "flow_prepare"},
+		Capabilities:  capabilities,
 		ClientIP:      ip.String(),
 		DNSServer:     remoteDNS,
 		Resources:     resources,

@@ -203,7 +203,7 @@ func TestVPNOnlySOCKSAllowsAuthorizedDomainAndIP(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	go newDesktopVPNOnlySOCKS(c, cfg, a).Serve(ln)
+	go newDesktopVPNOnlySOCKS(c, cfg, a, false).Serve(ln)
 
 	prepareTestFlow(t, c, messages, "1")
 	d, _ := xproxy.SOCKS5("tcp", ln.Addr().String(), &xproxy.Auth{User: "hub/1", Password: cfg.SocksPassword}, nil)
@@ -243,7 +243,7 @@ func TestVPNOnlySOCKSRejectsUnauthorizedTargetWithRepRuleFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	go newDesktopVPNOnlySOCKS(c, cfg, a).Serve(ln)
+	go newDesktopVPNOnlySOCKS(c, cfg, a, false).Serve(ln)
 
 	prepareTestFlow(t, c, messages, "2")
 	d, _ := xproxy.SOCKS5("tcp", ln.Addr().String(), &xproxy.Auth{User: "hub/2", Password: cfg.SocksPassword}, nil)

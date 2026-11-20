@@ -30,10 +30,14 @@ func (s *Stack) DialUDP(ctx context.Context, addr *net.UDPAddr) (net.Conn, error
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	ip := addr.IP.To4()
+	if ip == nil {
+		return nil, &net.AddrError{Err: "VPN UDP requires an IPv4 address", Addr: addr.String()}
+	}
 	conn, err := gonet.DialUDP(s.gvisorStack, nil, &tcpip.FullAddress{
 		NIC:  NICID,
 		Port: uint16(addr.Port),
-		Addr: tcpip.AddrFromSlice(addr.IP),
+		Addr: tcpip.AddrFromSlice(ip),
 	}, header.IPv4ProtocolNumber)
 	if err != nil {
 		return nil, err
