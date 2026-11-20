@@ -162,6 +162,7 @@ func serve(c *control, cfg Config) error {
 	aliases := newCaptureAliases(r, ipResources, d)
 	c.setDNSHandler(dnsHandler(r, ipResources, aliases))
 	defer c.stopDNS()
+	defer c.stopFlow()
 	vpnStack.SetupResolve(service.NewDnsServer(r, []string{remoteDNS}))
 	vpnStack.SetupIPPool(r.IPPool)
 	go vpnStack.Run()
@@ -170,14 +171,33 @@ func serve(c *control, cfg Config) error {
 		return err
 	}
 	defer listener.Close()
-	server := newDesktopSOCKS(c, cfg, aliases)
-	ip, _ := vpn.IP()
-	resources := resourceSnapshot(ipResources, domains, dnsResources, cfg, remoteDNS, vpn.CanUseTCPTunnel())
-	if err := c.emit(Message{Type: "ready", Address: listener.Addr().String(), ClientIP: ip.String(), DNSServer: remoteDNS, Resources: resources, FlowReporting: true}); err != nil {
+
+	vpnListener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
 		return err
 	}
-	served := make(chan error, 1)
+	defer vpnListener.Close()
+
+	server := newDesktopSOCKS(c, cfg, aliases)
+	vpnServer := newDesktopVPNOnlySOCKS(c, cfg, aliases)
+
+	ip, _ := vpn.IP()
+	resources := resourceSnapshot(ipResources, domains, dnsResources, cfg, remoteDNS, vpn.CanUseTCPTunnel())
+	if err := c.emit(Message{
+		Type:          "ready",
+		Address:       listener.Addr().String(),
+		VPNAddress:    vpnListener.Addr().String(),
+		Capabilities:  []string{"strict_vpn", "flow_cancel", "flow_prepare"},
+		ClientIP:      ip.String(),
+		DNSServer:     remoteDNS,
+		Resources:     resources,
+		FlowReporting: true,
+	}); err != nil {
+		return err
+	}
+	served := make(chan error, 2)
 	go func() { served <- server.Serve(listener) }()
+	go func() { served <- vpnServer.Serve(vpnListener) }()
 	select {
 	case <-c.ctx.Done():
 		return nil

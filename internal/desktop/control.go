@@ -12,19 +12,22 @@ import (
 )
 
 type control struct {
-	ctx        context.Context
-	cancel     context.CancelFunc
-	session    string
-	encoder    *json.Encoder
-	writeMu    sync.Mutex
-	mu         sync.Mutex
-	sequence   uint64
-	pendingID  string
-	pending    chan string
-	dnsMu      sync.Mutex
-	dnsHandler dnsExchange
-	dnsPending map[string]context.CancelFunc
-	dnsWG      sync.WaitGroup
+	ctx         context.Context
+	cancel      context.CancelFunc
+	session     string
+	encoder     *json.Encoder
+	writeMu     sync.Mutex
+	mu          sync.Mutex
+	sequence    uint64
+	pendingID   string
+	pending     chan string
+	dnsMu       sync.Mutex
+	dnsHandler  dnsExchange
+	dnsPending  map[string]context.CancelFunc
+	dnsWG       sync.WaitGroup
+	flowMu      sync.Mutex
+	flowPending map[string]*flowRequest
+	flowSlots   chan struct{}
 }
 
 func (c *control) emit(m Message) error {
@@ -74,6 +77,9 @@ func (c *control) accept(m Message) bool {
 	if m.Type == "dns_query" || m.Type == "dns_cancel" {
 		return c.acceptDNS(m)
 	}
+	if m.Type == "flow_cancel" || m.Type == "flow_prepare" {
+		return c.acceptFlow(m)
+	}
 	if m.Type != "answer" || len(m.Answer) > 1024 || strings.TrimSpace(m.Answer) == "" {
 		return true
 	}
@@ -87,6 +93,15 @@ func (c *control) accept(m Message) bool {
 		c.pendingID = "" // an answer can be consumed only once
 	}
 	return true
+}
+
+func (c *control) stopFlow() {
+	c.flowMu.Lock()
+	for _, request := range c.flowPending {
+		request.cancel()
+	}
+	c.flowPending = nil
+	c.flowMu.Unlock()
 }
 
 func scanMessages(r io.Reader) *bufio.Scanner {

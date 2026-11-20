@@ -2,7 +2,7 @@
 // Keep protocol.go identical to aTrustHub/internal/workeripc/protocol.go.
 package desktop
 
-const Version = 5
+const Version = 6
 const MaxMessage = 2 << 20
 const MaxDNSMessage = 65535
 const MaxDNSRequests = 16
@@ -100,10 +100,13 @@ type Message struct {
 	Image         []byte            `json:"image,omitempty"`
 	Answer        string            `json:"answer,omitempty"`
 	Address       string            `json:"address,omitempty"`
+	VPNAddress    string            `json:"vpnAddress,omitempty"`
+	Capabilities  []string          `json:"capabilities,omitempty"`
 	ClientIP      string            `json:"clientIP,omitempty"`
 	DNSServer     string            `json:"dnsServer,omitempty"`
 	Error         string            `json:"error,omitempty"`
 	RequestID     string            `json:"requestId,omitempty"`
+	Deadline      int64             `json:"deadline,omitempty"` // Unix milliseconds; flow_prepare only
 	DNS           []byte            `json:"dns,omitempty"`
 	CaptureDNS    bool              `json:"captureDNS,omitempty"`
 	CapturePrefix string            `json:"capturePrefix,omitempty"`

@@ -2,6 +2,7 @@ package dial
 
 import (
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -36,6 +37,82 @@ func (d *Dialer) DialVPNIPPort(ctx context.Context, network, addr string) (net.C
 		return nil, ErrACLDenied
 	}
 	return d.DialIPPort(context.WithValue(ctx, requireVPNKey{}, true), network, addr)
+}
+
+// DialVPN connects strictly through the VPN tunnel stack without direct fallback.
+// It resolves domain names using VPN DNS (d.resolver) and verifies destination authorization
+// against server-issued domain and IP resources. If unauthorized, or if the destination is
+// IPv6 or an unsupported protocol, it records a blocked decision and returns ErrACLDenied.
+func (d *Dialer) DialVPN(ctx context.Context, network, addr string) (net.Conn, error) {
+	if network != "tcp" && network != "udp" {
+		reportDecision(ctx, Decision{Route: "blocked", Rule: "acl", Address: addr})
+		return nil, ErrACLDenied
+	}
+
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		reportDecision(ctx, Decision{Route: "blocked", Rule: "acl", Address: addr})
+		return nil, ErrACLDenied
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		reportDecision(ctx, Decision{Route: "blocked", Rule: "acl", Address: addr})
+		return nil, ErrACLDenied
+	}
+
+	// Reject IPv6 literals immediately
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.To4() == nil {
+			reportDecision(ctx, Decision{Route: "blocked", Rule: "acl", Address: addr})
+			return nil, ErrACLDenied
+		}
+		return d.DialIPPort(context.WithValue(ctx, requireVPNKey{}, true), network, addr)
+	}
+
+	// Host is a domain name. Resolve strictly via VPN DNS.
+	if d.resolver == nil {
+		reportDecision(ctx, Decision{Route: "blocked", Rule: "acl", Address: addr})
+		return nil, ErrACLDenied
+	}
+
+	resCtx, ip, err := d.resolver.ResolveVPN(ctx, host)
+	if err != nil {
+		reportDecision(ctx, Decision{Route: "blocked", Rule: "acl", Address: addr})
+		return nil, err
+	}
+	if ip == nil || ip.To4() == nil {
+		reportDecision(resCtx, Decision{Route: "blocked", Rule: "acl", Address: addr})
+		return nil, ErrACLDenied
+	}
+
+	return d.DialIPPort(context.WithValue(resCtx, requireVPNKey{}, true), network, net.JoinHostPort(ip.String(), portStr))
+}
+
+var domainRuleKey = reflect.ValueOf("DOMAIN_RULE").Convert(reflect.TypeOf(resolve.ContextKeyDomainResource)).Interface()
+
+func (d *Dialer) findDomainResource(ctx context.Context, network string, port int) (client.DomainResource, string, bool) {
+	res := ctx.Value(resolve.ContextKeyDomainResource)
+	if res == nil {
+		return client.DomainResource{}, "", false
+	}
+	domain, _ := ctx.Value(domainRuleKey).(string)
+	switch resources := res.(type) {
+	case []client.DomainResource:
+		r, ok := matchDomainResourceForTunnel(resources, network, port)
+		return r, domain, ok
+	case client.DomainResource:
+		r, ok := matchDomainResourceForTunnel([]client.DomainResource{resources}, network, port)
+		return r, domain, ok
+	}
+	return client.DomainResource{}, "", false
+}
+
+func (d *Dialer) findIPResource(ip net.IP, network string, port int) (client.IPResource, bool) {
+	if d.resourceIndex == nil || d.ipResources == nil {
+		return client.IPResource{}, false
+	}
+	return matchIPResourceForTunnel(d.resourceIndex, ip, network, port)
 }
 
 type Dialer struct {
@@ -131,27 +208,17 @@ func (d *Dialer) DialIPPort(ctx context.Context, network, ipAddr string) (net.Co
 	matchedResource := false
 	decision := Decision{Route: "vpn", Rule: "forced", Address: ipAddr}
 
-	if res := ctx.Value(resolve.ContextKeyDomainResource); res != nil {
-		var resource client.DomainResource
-		var matched bool
-		switch resources := res.(type) {
-		case []client.DomainResource:
-			resource, matched = matchDomainResourceForTunnel(resources, network, port)
-		case client.DomainResource:
-			resource, matched = matchDomainResourceForTunnel([]client.DomainResource{resources}, network, port)
-		}
-		if matched {
-			decision.Rule = "domain_resource"
-			decision.Domain, _ = ctx.Value(resolve.ContextKeyDomainRule).(string)
-			decision.PortMin, decision.PortMax, decision.Protocol = resource.PortMin, resource.PortMax, resource.Protocol
-			ctx = context.WithValue(ctx, resolve.ContextKeyDomainResource, resource)
-			useVPN = true
-			matchedResource = true
-		}
+	if res, domain, matched := d.findDomainResource(ctx, network, port); matched {
+		decision.Rule = "domain_resource"
+		decision.Domain = domain
+		decision.PortMin, decision.PortMax, decision.Protocol = res.PortMin, res.PortMax, res.Protocol
+		ctx = context.WithValue(ctx, resolve.ContextKeyDomainResource, res)
+		useVPN = true
+		matchedResource = true
 	}
 
 	if !matchedResource && d.ipResources != nil {
-		if resource, matched := matchIPResourceForTunnel(d.resourceIndex, target.IP, network, port); matched {
+		if resource, matched := d.findIPResource(target.IP, network, port); matched {
 			decision.Rule = "ip_resource"
 			decision.IPMin, decision.IPMax = resource.IPMin.String(), resource.IPMax.String()
 			decision.PortMin, decision.PortMax, decision.Protocol = resource.PortMin, resource.PortMax, resource.Protocol
@@ -228,6 +295,10 @@ func matchIPResourceForTunnel(index *ipresource.Index, target net.IP, network st
 	return index.Match(target, network, port)
 }
 
+type vpnDNSChecker interface {
+	MustUseVPNDNS(host string) bool
+}
+
 func (d *Dialer) Dial(ctx context.Context, network string, addr string) (net.Conn, error) {
 	// If addr is IPv6, use direct connection
 	if strings.Count(addr, ":") > 1 {
@@ -243,7 +314,7 @@ func (d *Dialer) Dial(ctx context.Context, network string, addr string) (net.Con
 	if ip = net.ParseIP(host); ip == nil {
 		ctx, ip, err = d.resolver.Resolve(ctx, host)
 		if err != nil {
-			if d.resolver.MustUseVPNDNS(host) {
+			if checker, ok := any(d.resolver).(vpnDNSChecker); ok && checker.MustUseVPNDNS(host) {
 				return nil, err
 			}
 			return d.dialDirectHost(ctx, network, addr)
