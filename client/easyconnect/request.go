@@ -417,10 +417,9 @@ func (c *Client) loginCert() error {
 	}
 
 	c.setHTTPTransport(&tls.Config{
-		InsecureSkipVerify: true,
-		Renegotiation:      tls.RenegotiateOnceAsClient,
-		Certificates:       []tls.Certificate{c.tlsCert},
-		RootCAs:            caCertPool,
+		Renegotiation: tls.RenegotiateOnceAsClient,
+		Certificates:  []tls.Certificate{c.tlsCert},
+		RootCAs:       caCertPool,
 	})
 
 	addr = "https://" + c.server + "/por/login_cert.csp?anti_replay=1&encrypt=1&type=cs"

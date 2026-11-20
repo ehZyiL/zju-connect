@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -190,11 +191,21 @@ var gatewayErrorCode = regexp.MustCompile(`(?i)ErrorCode[^0-9]{0,12}([0-9]{1,8})
 // Never send upstream XML, credentials or session identifiers to the UI.
 func safeError(err error) string {
 	s := err.Error()
+	var certInvalid x509.CertificateInvalidError
+	var unknownAuth x509.UnknownAuthorityError
+	var hostnameErr x509.HostnameError
+	lower := strings.ToLower(s)
 	switch {
 	case strings.Contains(s, "fingerprint"):
 		return "网关证书与已信任的证书不同，连接已终止；请查看证书并核实变更"
 	case strings.Contains(s, "SAN dNSName is malformed"):
 		return "网关证书的域名字段格式不兼容；请点击「查看网关证书」，确认来源后重试"
+	case errors.As(err, &unknownAuth) || errors.As(err, &certInvalid) || errors.As(err, &hostnameErr) ||
+		strings.Contains(lower, "certificate signed by unknown authority") ||
+		strings.Contains(lower, "x509: certificate") ||
+		strings.Contains(lower, "certificate is not valid") ||
+		strings.Contains(lower, "tls: failed to verify certificate"):
+		return "网关证书不受系统信任或主机名不匹配；请点击「查看网关证书」，确认指纹后再连接"
 	case strings.Contains(s, "资源配置不可用"):
 		return "网关未返回可用资源配置，连接已终止"
 	case errors.Is(err, context.Canceled):

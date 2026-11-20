@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -121,7 +122,7 @@ func NewClient(options Options) *Client {
 		graphCodeFile:     options.Auth.GraphCodeFile,
 		challengeHandler:  challengeHandler,
 	}
-	c.setHTTPTransport(&tls.Config{InsecureSkipVerify: true})
+	c.setHTTPTransport(nil)
 	return c
 }
 
@@ -225,6 +226,7 @@ func (c *Client) Setup() error {
 				log.Printf("Best line: %v", bestLine)
 				if c.server != bestLine {
 					c.server = bestLine
+					c.setHTTPTransport(nil)
 					c.testMultiLine = false
 					c.twfID = ""
 					if err := c.ensureSession(); err != nil {
@@ -295,6 +297,24 @@ func (c *Client) ensureSession() error {
 	return c.requestTwfID(c.graphCodeFile)
 }
 
+func (c *Client) serverHost() string {
+	host := c.server
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.Trim(host, "[]")
+}
+
+func (c *Client) defaultTLSConfig() *tls.Config {
+	cfg := &tls.Config{
+		ServerName: c.serverHost(),
+	}
+	if c.certificateSHA256 != "" {
+		cfg.InsecureSkipVerify = true
+	}
+	return cfg
+}
+
 func (c *Client) setHTTPTransport(tlsConfig *tls.Config) {
 	if transport, ok := c.httpClient.Transport.(*http.Transport); ok {
 		transport.CloseIdleConnections()
@@ -304,7 +324,16 @@ func (c *Client) setHTTPTransport(tlsConfig *tls.Config) {
 	if c.disableProxyEnv {
 		transport.Proxy = nil
 	}
+	if tlsConfig == nil {
+		tlsConfig = c.defaultTLSConfig()
+	}
 	transport.TLSClientConfig = tlsConfig.Clone()
+	if transport.TLSClientConfig.ServerName == "" {
+		transport.TLSClientConfig.ServerName = c.serverHost()
+	}
+	if c.certificateSHA256 != "" {
+		transport.TLSClientConfig.InsecureSkipVerify = true
+	}
 	if c.tlsKeyLogWriter != nil {
 		transport.TLSClientConfig.KeyLogWriter = c.tlsKeyLogWriter
 	}

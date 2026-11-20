@@ -12,8 +12,12 @@ import (
 )
 
 func (c *Client) tunnelTLSConfig() *utls.Config {
-	config := &utls.Config{InsecureSkipVerify: true, KeyLogWriter: c.tlsKeyLogWriter}
+	config := &utls.Config{
+		ServerName:   c.serverHost(),
+		KeyLogWriter: c.tlsKeyLogWriter,
+	}
 	if c.certificateSHA256 != "" {
+		config.InsecureSkipVerify = true
 		pin := c.certificateSHA256
 		config.VerifyPeerCertificate = pinnedcert.Verify(pin)
 		config.ParsePeerCertificate = func(der []byte) (*x509.Certificate, error) { return pinnedcert.Parse(der, pin) }
