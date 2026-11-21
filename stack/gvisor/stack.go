@@ -188,6 +188,18 @@ func NewStack(client clientpkg.Client) (*Stack, error) {
 	s.gvisorStack.SetTransportProtocolOption(tcp.ProtocolNumber, &sOpt)
 	cOpt := tcpip.CongestionControlOption("cubic")
 	s.gvisorStack.SetTransportProtocolOption(tcp.ProtocolNumber, &cOpt)
+	rcvOpt := tcpip.TCPReceiveBufferSizeRangeOption{
+		Min:     4096,
+		Default: 32768,
+		Max:     262144,
+	}
+	s.gvisorStack.SetTransportProtocolOption(tcp.ProtocolNumber, &rcvOpt)
+	sndOpt := tcpip.TCPSendBufferSizeRangeOption{
+		Min:     4096,
+		Default: 32768,
+		Max:     262144,
+	}
+	s.gvisorStack.SetTransportProtocolOption(tcp.ProtocolNumber, &sndOpt)
 	s.gvisorStack.AddRoute(tcpip.Route{Destination: header.IPv4EmptySubnet, NIC: NICID})
 
 	return s, nil

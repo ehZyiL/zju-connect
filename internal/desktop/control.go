@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -73,6 +75,14 @@ func (c *control) accept(m Message) bool {
 	if m.Type == "stop" {
 		c.cancel()
 		return false
+	}
+	if m.Type == "trim_memory" {
+		go func() {
+			runtime.GC()
+			debug.FreeOSMemory()
+			trimWorkingSet()
+		}()
+		return true
 	}
 	if m.Type == "dns_query" || m.Type == "dns_cancel" {
 		return c.acceptDNS(m)

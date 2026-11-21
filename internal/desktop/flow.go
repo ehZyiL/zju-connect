@@ -9,12 +9,20 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/mythologyli/zju-connect/dial"
 	"github.com/things-go/go-socks5"
 	"github.com/things-go/go-socks5/statute"
 )
+
+var copyBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 16*1024)
+		return &b
+	},
+}
 
 var errFlowDNS = errors.New("destination DNS failed")
 var errCaptureAlias = errors.New("capture alias expired or was never issued by this VPN session")
@@ -96,14 +104,18 @@ func newDesktopVPNOnlySOCKS(c *control, cfg Config, aliases *captureAliases, all
 			}
 			errCh := make(chan error, 2)
 			go func() {
-				_, copyErr := io.Copy(conn, req.Reader)
+				buf := copyBufPool.Get().(*[]byte)
+				defer copyBufPool.Put(buf)
+				_, copyErr := io.CopyBuffer(conn, req.Reader, *buf)
 				if cw, ok := conn.(interface{ CloseWrite() error }); ok {
 					_ = cw.CloseWrite()
 				}
 				errCh <- copyErr
 			}()
 			go func() {
-				_, copyErr := io.Copy(writer, conn)
+				buf := copyBufPool.Get().(*[]byte)
+				defer copyBufPool.Put(buf)
+				_, copyErr := io.CopyBuffer(writer, conn, *buf)
 				if cw, ok := writer.(interface{ CloseWrite() error }); ok {
 					_ = cw.CloseWrite()
 				}
