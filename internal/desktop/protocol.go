@@ -9,7 +9,7 @@ import (
 	"strconv"
 )
 
-const Version = 6
+const Version = 7
 const MaxMessage = 2 << 20
 const MaxDNSMessage = 65535
 const MaxDNSRequests = 16
@@ -57,6 +57,10 @@ type IPRule struct {
 	PortMin  int    `json:"portMin"`
 	PortMax  int    `json:"portMax"`
 	Protocol string `json:"protocol"`
+	// AppID names the published application the rule came from, so the desktop
+	// can drop the resources of an application the user switched off. It is
+	// attribution only: authorization still comes from Min/Max/Port.
+	AppID string `json:"appId,omitempty"`
 }
 
 type DomainRule struct {
@@ -64,6 +68,8 @@ type DomainRule struct {
 	PortMin  int    `json:"portMin"`
 	PortMax  int    `json:"portMax"`
 	Protocol string `json:"protocol"`
+	// AppID is the same attribution field as IPRule.AppID.
+	AppID string `json:"appId,omitempty"`
 }
 
 type DNSRecord struct {
