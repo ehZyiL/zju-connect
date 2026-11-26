@@ -1,4 +1,4 @@
-// easyconnect-worker is private to EasyConnect Hub. Credentials arrive only
+// connect-hub-worker is private to Connect Hub. Credentials arrive only
 // over inherited pipes, never arguments, environment variables or files.
 package main
 

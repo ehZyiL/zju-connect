@@ -14,7 +14,7 @@ func resourceSnapshot(ips []client.IPResource, domains client.DomainResources, r
 		s.Tunnel = "tcp"
 	}
 	for _, r := range ips {
-		s.IPRules = append(s.IPRules, IPRule{Min: r.IPMin.String(), Max: r.IPMax.String(), PortMin: r.PortMin, PortMax: r.PortMax, Protocol: r.Protocol})
+		s.IPRules = append(s.IPRules, IPRule{Min: r.IPMin.String(), Max: r.IPMax.String(), PortMin: r.PortMin, PortMax: r.PortMax, Protocol: r.Protocol, AppID: r.AppID})
 	}
 	keys := make([]string, 0, len(domains))
 	for name := range domains {
@@ -23,7 +23,7 @@ func resourceSnapshot(ips []client.IPResource, domains client.DomainResources, r
 	sort.Strings(keys)
 	for _, name := range keys {
 		for _, r := range domains[name] {
-			s.DomainRules = append(s.DomainRules, DomainRule{Domain: name, PortMin: r.PortMin, PortMax: r.PortMax, Protocol: r.Protocol})
+			s.DomainRules = append(s.DomainRules, DomainRule{Domain: name, PortMin: r.PortMin, PortMax: r.PortMax, Protocol: r.Protocol, AppID: r.AppID})
 		}
 	}
 	keys = keys[:0]
