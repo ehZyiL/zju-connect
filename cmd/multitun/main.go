@@ -1,3 +1,5 @@
+//go:build darwin || windows
+
 // Command multitun runs aTrust's native TUN stack for several access points
 // in one root process. Each access point gets its own utun, its own resource
 // routes and its own fake-IP pool, so a packet is carried by the access point
