@@ -9,9 +9,11 @@ import (
 	"runtime/debug"
 
 	"github.com/mythologyli/zju-connect/internal/desktop"
+	"github.com/mythologyli/zju-connect/stack/gvisor"
 )
 
 func main() {
+	gvisor.ProcessExitOnShutdown = true
 	// 针对 Worker 进程施加内存自律限制：
 	// 软限制 64MB，GC 百分比调整为 75，避免多 Worker 堆内存膨胀
 	debug.SetMemoryLimit(64 << 20)

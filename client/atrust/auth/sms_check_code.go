@@ -50,7 +50,7 @@ func (s *Session) loginAuthSmsCheckCode(phone, loginDomain, graphCodeFile string
 		Kind:    authchallenge.CodeSMS,
 		Message: "Please enter the SMS verification code:",
 	}
-	response, err := s.challengeHandler.HandleCodeChallenge(challenge)
+	response, err := s.handleCodeChallenge(challenge, CodeSMS)
 	if err != nil {
 		return fmt.Errorf("complete primary SMS challenge: %w", err)
 	}

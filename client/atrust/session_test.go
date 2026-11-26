@@ -150,6 +150,7 @@ func TestConcurrentSessionSIDReaders(t *testing.T) {
 
 func TestSessionInvalidExits(t *testing.T) {
 	if mode := os.Getenv("ZJU_CONNECT_TEST_INVALID_SESSION"); mode != "" {
+		ProcessExitOnSessionInvalid = true
 		parts := strings.Split(mode, ":")
 		payload := fmt.Sprintf(`{"code":%s,"message":"session rejected"}`, parts[1])
 		switch parts[0] {

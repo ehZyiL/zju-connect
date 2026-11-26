@@ -16,9 +16,7 @@ type ClientResource struct {
 	Data struct {
 		AppList struct {
 			Data struct {
-				AppInfo []struct {
-					Apps []resourceApp
-				}
+				AppInfo []resourceGroup
 
 				Config struct {
 					NodeGroupConf struct {
@@ -63,20 +61,142 @@ type ClientResource struct {
 	}
 }
 
+type resourceGroup struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	AppName     string `json:"appName"`
+	Description string `json:"description"`
+	AppDesc     string `json:"appDesc"`
+	IconPath    string `json:"iconPath"`
+	AppIconPath string `json:"appIconPath"`
+	GroupID     string `json:"groupId"`
+	GroupName   string `json:"groupName"`
+	Apps        []resourceApp
+}
+
 type resourceApp struct {
-	ID              string
-	NodeGroupID     string
-	AccessModel     string
-	EnableTCPPrefL3 bool
-	AddrPretend     any `json:"addrPretend"`
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	AppName         string `json:"appName"`
+	Description     string `json:"description"`
+	AppDesc         string `json:"appDesc"`
+	AccessModel     string `json:"accessModel"`
+	SubModel        string `json:"subModel"`
+	GroupID         string `json:"groupId"`
+	GroupName       string `json:"groupName"`
+	NodeGroupID     string `json:"nodeGroupId"`
+	NodeGroupName   string `json:"nodeGroupName"`
+	EnableTCPPrefL3 bool   `json:"enableTCPPrefL3"`
+	AddrPretend     any    `json:"addrPretend"`
 	AddressList     []resourceAddress
+	AppAddress      string `json:"appAddress"`
+	AccessAddress   string `json:"accessAddress"`
+	AccessEntry     string `json:"accessEntry"`
+	IconID          string `json:"iconId"`
+	IconPath        string `json:"iconPath"`
+	AppIconPath     string `json:"appIconPath"`
+	IconType        string `json:"iconType"`
+	Status          int    `json:"status"`
 }
 
 type resourceAddress struct {
+	Protocol string   `json:"protocol"`
+	Port     string   `json:"port"`
+	Host     string   `json:"host"`
+	IP       []string `json:"ip"`
+}
+
+// App is one application the server published to this user, as the
+// workbench shows it.
+type App struct {
+	ID              string
+	Name            string
+	Description     string
+	AccessModel     string
+	SubModel        string
+	GroupID         string
+	GroupName       string
+	NodeGroupID     string
+	NodeGroupName   string
+	IconID          string
+	IconPath        string
+	IconType        string
+	AppAddress      string
+	AccessAddress   string
+	AccessEntry     string
+	EnableTCPPrefL3 bool
+	Addresses       []AppAddress
+}
+
+// AppAddress is one backend address of a tunnel application.
+type AppAddress struct {
 	Protocol string
-	Port     string
 	Host     string
-	IP       []string
+	Port     string
+}
+
+// ParseApps returns the applications in a clientResource response, for
+// callers that want the workbench list without logging in.
+func ParseApps(data []byte) ([]App, error) {
+	var clientResource ClientResource
+	if err := json.Unmarshal(data, &clientResource); err != nil {
+		return nil, err
+	}
+	return appsFromResource(&clientResource), nil
+}
+
+func appsFromResource(clientResource *ClientResource) []App {
+	var apps []App
+	for _, group := range clientResource.Data.AppList.Data.AppInfo {
+		for _, appItem := range group.Apps {
+			name := firstNonEmptyString(appItem.Name, appItem.AppName, group.Name, group.AppName)
+			description := firstNonEmptyString(appItem.Description, appItem.AppDesc, group.Description, group.AppDesc)
+			iconPath := firstNonEmptyString(appItem.IconPath, appItem.AppIconPath, group.IconPath, group.AppIconPath)
+			app := App{
+				ID:              appItem.ID,
+				Name:            name,
+				Description:     description,
+				AccessModel:     appItem.AccessModel,
+				SubModel:        appItem.SubModel,
+				GroupID:         firstNonEmptyString(appItem.GroupID, group.GroupID),
+				GroupName:       firstNonEmptyString(appItem.GroupName, group.GroupName),
+				NodeGroupID:     appItem.NodeGroupID,
+				NodeGroupName:   appItem.NodeGroupName,
+				IconID:          appItem.IconID,
+				IconPath:        iconPath,
+				IconType:        appItem.IconType,
+				AppAddress:      appItem.AppAddress,
+				AccessAddress:   appItem.AccessAddress,
+				AccessEntry:     appItem.AccessEntry,
+				EnableTCPPrefL3: appItem.EnableTCPPrefL3,
+			}
+			for _, addr := range appItem.AddressList {
+				host := addr.Host
+				if host == "" && len(addr.IP) > 0 {
+					host = addr.IP[0]
+				}
+				app.Addresses = append(app.Addresses, AppAddress{
+					Protocol: addr.Protocol,
+					Host:     host,
+					Port:     addr.Port,
+				})
+			}
+			if app.Name == "" && len(app.Addresses) > 0 {
+				app.Name = app.Addresses[0].Host
+			}
+			apps = append(apps, app)
+		}
+	}
+	return apps
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func resourceAddrPretend(value any) bool {
@@ -94,6 +214,8 @@ func (c *Client) parseResource(resource []byte) error {
 	if err != nil {
 		return err
 	}
+	c.resourceData = append([]byte(nil), resource...)
+	c.apps = appsFromResource(&clientResource)
 
 	ipSetBuilder := netaddr.IPSetBuilder{}
 	c.ipResources = make([]client.IPResource, 0)

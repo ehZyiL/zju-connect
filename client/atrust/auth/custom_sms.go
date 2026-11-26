@@ -22,7 +22,7 @@ func (s *Session) completeCustomSMS() (authStep, error) {
 		Message:              "Please enter the SMS verification code:",
 		CanSkipSecondaryAuth: true,
 	}
-	response, err := s.challengeHandler.HandleCodeChallenge(challenge)
+	response, err := s.handleCodeChallenge(challenge, CodeCustomSMS)
 	if err != nil {
 		return authStep{}, fmt.Errorf("complete custom SMS challenge: %w", err)
 	}
@@ -81,6 +81,7 @@ func (s *Session) sendCustomSMS() error {
 	}
 
 	log.Printf("%s: %s", result.Message, result.Data.Tips)
+	s.lastTip = result.Message + ": " + result.Data.Tips
 	return nil
 }
 

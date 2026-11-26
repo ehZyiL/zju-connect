@@ -527,7 +527,9 @@ func (c *l3TunnelConn) handleAuthResp(status byte, payload []byte) {
 		return
 	}
 	if resp.Code == 10000004 || resp.Code == 75500002 {
-		log.Fatalf("l3-tunnel resource auth: aTrust session is invalid (code %d): %s", resp.Code, resp.Message)
+		fatalSession("l3-tunnel resource auth: aTrust session is invalid (code %d): %s", resp.Code, resp.Message)
+		c.markAuthErrorFromPayload(payload, fmt.Errorf("session rejected (code %d): %s", resp.Code, resp.Message))
+		return
 	}
 	ct := c.conntrackMgr.getByID(resp.Data.ConntrackHash)
 	if ct == nil {
@@ -936,7 +938,7 @@ func (c *l3TunnelConn) authTunnel() error {
 			return err
 		}
 		if resp.Code == 10000004 || resp.Code == 75500002 {
-			log.Fatalf("l3-tunnel: aTrust session is invalid (code %d): %s", resp.Code, resp.Message)
+			fatalSession("l3-tunnel: aTrust session is invalid (code %d): %s", resp.Code, resp.Message)
 		}
 		if resp.Code != 0 {
 			return fmt.Errorf("l3-tunnel tunnel auth failed: %d %s", resp.Code, resp.Message)

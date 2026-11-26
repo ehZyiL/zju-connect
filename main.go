@@ -38,6 +38,8 @@ import (
 var conf configs.Config
 
 func main() {
+	atrustclient.ProcessExitOnSessionInvalid = true
+	gvisor.ProcessExitOnShutdown = true
 	if exitCode := initialize(os.Args[1:]); exitCode >= 0 {
 		os.Exit(exitCode)
 	}

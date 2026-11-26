@@ -43,6 +43,8 @@ type SetupOptions struct {
 	ServerPort               int
 	LoginMethod              auth.LoginMethod
 	TOTPSecret               string
+	PromptCode               auth.CodePrompter
+	BrowserCaptcha           bool
 	ClientData               []byte
 	ResourceData             []byte
 	BestNodesRefreshInterval time.Duration
@@ -59,9 +61,13 @@ type Client struct {
 	ConnectionID string
 	SignKey      string
 
-	sessionMu   sync.RWMutex
-	sessionErr  error
-	refreshDone chan struct{}
+	sessionMu    sync.RWMutex
+	sessionErr   error
+	refreshDone  chan struct{}
+	authData     auth.ClientAuthData
+	authHost     string
+	apps         []App
+	resourceData []byte
 
 	serverAddress   string
 	ipResources     []client.IPResource
@@ -365,6 +371,7 @@ func (c *Client) SetupContext(ctx context.Context, options SetupOptions) ([]byte
 		authServerHost = fmt.Sprintf("%s:%d", options.ServerAddress, options.ServerPort)
 	}
 	sess := auth.NewSessionContext(setupCtx, authServerHost, c.tlsKeyLogWriter, c.underlayDialer.DialContext)
+	c.authHost = authServerHost
 	serverVersionInfo, manifestErr := sess.ServerVersionInfo()
 	serverVersionInfo, err := resolveServerVersionInfo(clientAuthData.ServerVersionInfo, serverVersionInfo, manifestErr)
 	if err != nil {
@@ -412,6 +419,8 @@ func (c *Client) SetupContext(ctx context.Context, options SetupOptions) ([]byte
 			Cookies:          clientAuthData.Cookies,
 			TOTPSecret:       options.TOTPSecret,
 			ChallengeHandler: options.ChallengeHandler,
+			PromptCode:       options.PromptCode,
+			BrowserCaptcha:   options.BrowserCaptcha,
 		})
 		if err != nil {
 			log.Println("Login error:", err)
@@ -433,6 +442,9 @@ func (c *Client) SetupContext(ctx context.Context, options SetupOptions) ([]byte
 	c.setSessionSID(snapshot.SID, nil)
 	clientAuthData.DeviceID = c.DeviceID
 	clientAuthData.Cookies = snapshot.Cookies
+	c.sessionMu.Lock()
+	c.authData = clientAuthData
+	c.sessionMu.Unlock()
 	authData, err := json.Marshal(clientAuthData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal client data: %w", err)
@@ -472,6 +484,7 @@ func (c *Client) SetupContext(ctx context.Context, options SetupOptions) ([]byte
 		}
 	}
 	if options.SessionRefreshInterval > 0 {
+		sess = sess.WithContext(c.lifecycleCtx)
 		c.startSessionRefresh(sess.Refresh, clientAuthData, options.SaveClientData, options.SessionRefreshInterval)
 	}
 

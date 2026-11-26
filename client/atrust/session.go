@@ -10,6 +10,17 @@ import (
 	"github.com/mythologyli/zju-connect/log"
 )
 
+// ProcessExitOnSessionInvalid is enabled only by standalone CLI entry points.
+// Embedders receive an error and keep their other sessions alive.
+// Configure before starting any clients.
+var ProcessExitOnSessionInvalid bool
+
+func fatalSession(format string, args ...any) {
+	if ProcessExitOnSessionInvalid {
+		log.Fatalf(format, args...)
+	}
+}
+
 func (c *Client) sessionSID() (string, error) {
 	c.sessionMu.RLock()
 	defer c.sessionMu.RUnlock()
@@ -39,7 +50,9 @@ func (c *Client) startSessionRefresh(refresh func(context.Context) (auth.LoginRe
 				return
 			}
 			if errors.Is(err, auth.ErrSessionInvalid) {
-				log.Fatalf("aTrust session maintenance failed: %v", err)
+				fatalSession("aTrust session maintenance failed: %v", err)
+				c.setSessionSID("", err)
+				return
 			}
 			if err != nil {
 				log.Printf("aTrust authConfig refresh failed: %v", err)
@@ -50,6 +63,9 @@ func (c *Client) startSessionRefresh(refresh func(context.Context) (auth.LoginRe
 			c.setSessionSID(snapshot.SID, nil)
 			log.Printf("aTrust session refreshed (SID changed: %t)", oldSID != snapshot.SID)
 			data.Cookies = snapshot.Cookies
+			c.sessionMu.Lock()
+			c.authData = data
+			c.sessionMu.Unlock()
 			if save != nil {
 				encoded, err := json.Marshal(data)
 				if err == nil {

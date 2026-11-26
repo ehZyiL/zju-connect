@@ -115,6 +115,9 @@ type Session struct {
 
 	response         map[string]json.RawMessage
 	challengeHandler authchallenge.Handler
+	promptCode       CodePrompter
+	lastTip          string
+	browserCaptcha   bool
 }
 
 func NewSession(server string, tlsKeyLogWriter io.Writer, dialContext ...client.DialContextFunc) *Session {
@@ -159,6 +162,15 @@ func (s *Session) request(req *http.Request) (*http.Response, error) {
 	return resp, nil
 }
 
+// WithContext keeps the authenticated HTTP session while transferring it from
+// a completed setup operation to its owner's lifetime. The original session
+// and the copy must not be used concurrently.
+func (s *Session) WithContext(ctx context.Context) *Session {
+	copy := *s
+	copy.ctx = ctx
+	return &copy
+}
+
 type releaseOnClose struct {
 	io.ReadCloser
 	release func()
@@ -171,12 +183,22 @@ func (b *releaseOnClose) Close() error {
 }
 
 type AuthInfo struct {
-	LoginDomain string `json:"loginDomain"`
-	AuthID      string `json:"authId"`
-	AuthType    string `json:"authType"`
-	AuthName    string `json:"authName"`
-	SubType     string `json:"subType"`
-	LoginURL    string `json:"loginUrl"`
+	LoginDomain        string             `json:"loginDomain"`
+	AuthID             string             `json:"authId"`
+	AuthType           string             `json:"authType"`
+	AuthName           string             `json:"authName"`
+	SubType            string             `json:"subType"`
+	LoginURL           string             `json:"loginUrl"`
+	QyWechatQrcodeConf QyWechatQrcodeConf `json:"qyWechatQrcodeConf"`
+}
+
+type QyWechatQrcodeConf struct {
+	QRCodeAPIURL string `json:"qrCodeApiUrl"`
+	AppID        string `json:"appid"`
+	AgentID      string `json:"agentid"`
+	RedirectURI  string `json:"redirect_uri"`
+	RequireURL   string `json:"require_url"`
+	State        string `json:"state"`
 }
 
 type LoginOptions struct {
@@ -185,6 +207,8 @@ type LoginOptions struct {
 	Cookies          []Cookie
 	TOTPSecret       string
 	ChallengeHandler authchallenge.Handler
+	PromptCode       CodePrompter
+	BrowserCaptcha   bool
 }
 
 type LoginResult struct {
@@ -232,15 +256,7 @@ func (s *Session) withGraphCheckCode(process func(string) (int, error), graphCod
 			return err
 		}
 
-		captchaResponse, err := s.challengeHandler.HandleClickCaptcha(authchallenge.ClickCaptchaChallenge{
-			Image:      imgData,
-			OutputPath: graphCodeFile,
-			Message:    "Please enter the graph check code JSON:",
-		})
-		if err != nil {
-			return fmt.Errorf("complete aTrust captcha challenge: %w", err)
-		}
-		graphCheckCode, err := graphCheckCodeFromResponse(captchaResponse, imgData)
+		graphCheckCode, err := s.promptGraphCheckCode(imgData, graphCodeFile)
 		if err != nil {
 			return fmt.Errorf("encode aTrust captcha response: %w", err)
 		}
@@ -358,6 +374,8 @@ func (s *Session) Login(method LoginMethod, opts LoginOptions) (LoginResult, err
 	s.macAddresses = opts.MACAddresses
 	s.totpSecret = opts.TOTPSecret
 	s.challengeHandler = opts.ChallengeHandler
+	s.promptCode = opts.PromptCode
+	s.browserCaptcha = opts.BrowserCaptcha
 	if s.challengeHandler == nil {
 		s.challengeHandler = authchallenge.NewCLIHandler(authchallenge.CLIOptions{})
 	}
@@ -402,6 +420,18 @@ func (s *Session) Login(method LoginMethod, opts LoginOptions) (LoginResult, err
 		return LoginResult{}, err
 	}
 
+	// WeCom gateways can authenticate through cookies without issuing a portal
+	// ticket. Keep this compatibility path scoped to external QR login.
+	if method.AuthType() == "auth/qywechat" && s.ticket == "" {
+		if isLogin, _, cfgErr := s.authConfig(false, true); cfgErr == nil && isLogin == 1 {
+			username, err := s.onlineInfo()
+			if err != nil {
+				return LoginResult{}, err
+			}
+			sid, cookies := sessionCookies(s)
+			return LoginResult{Username: username, SID: sid, Cookies: cookies}, nil
+		}
+	}
 	err = s.reportEnv()
 	if err != nil {
 		return LoginResult{}, err

@@ -18,6 +18,8 @@ import (
 )
 
 type Resolver struct {
+	// PreferFakeIP preserves domain identity when several applications share an IP.
+	PreferFakeIP      bool
 	remoteUDPResolver *net.Resolver
 	remoteTCPResolver *net.Resolver
 	secondaryResolver *net.Resolver
@@ -122,6 +124,10 @@ func (r *Resolver) Resolve(ctx context.Context, host string) (resCtx context.Con
 	}
 
 	if r.dnsResource != nil {
+		if r.PreferFakeIP && domainResourceFound && ctx.Value(ContextKeyFakeIP) != nil {
+			ip, err := r.IPPool.AllocateIP(host, domainResources)
+			return ctx, ip, err
+		}
 		if ips, found := r.dnsResource[host]; found && len(ips) > 0 {
 			cursorValue, _ := r.dnsResourceCursor.LoadOrStore(host, &atomic.Uint64{})
 			cursor := cursorValue.(*atomic.Uint64)
@@ -471,12 +477,16 @@ func NewResolver(stack stack.Stack, remoteDNSServer, secondaryDNSServer string, 
 // internal suffixes/resource domains never fall back to a public resolver.
 func (r *Resolver) EnableSplitDNS(suffixes []string) {
 	r.splitDNS = true
+	r.ConfigureInternalDomains(suffixes)
+}
+
+// ConfigureInternalDomains applies VPN ownership to the bounded query API
+// without changing the legacy aTrust packet resolver's public DNS behavior.
+// Call before serving requests.
+func (r *Resolver) ConfigureInternalDomains(suffixes []string) {
 	r.internalSuffixes = append([]string(nil), suffixes...)
 }
 func (r *Resolver) MustUseVPNDNS(host string) bool {
-	if !r.splitDNS {
-		return false
-	}
 	host = normalizeHostname(host)
 	if _, _, found := matchDomainResource(r.domainIndex, host); found {
 		return true

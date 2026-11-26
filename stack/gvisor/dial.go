@@ -12,7 +12,10 @@ import (
 
 func (s *Stack) DialTCP(ctx context.Context, addr *net.TCPAddr) (net.Conn, error) {
 	if s.endpoint.client.CanUseTCPTunnel() && !resolve.TCPPrefersL3(ctx) {
-		return s.endpoint.client.DialTCP(ctx, addr)
+		conn, err := s.endpoint.client.DialTCP(ctx, addr)
+		if err == nil || !s.AllowTCPFallback || ctx.Err() != nil {
+			return conn, err
+		}
 	}
 
 	conn, err := gonet.DialContextTCP(ctx, s.gvisorStack, tcpip.FullAddress{

@@ -103,6 +103,8 @@ func (s *Session) authConfigContext(ctx context.Context, mod, needTicket, refres
 			} `json:"security"`
 			PubKey         string             `json:"pubKey"`
 			PubKeyExp      string             `json:"pubKeyExp"`
+			Ticket         string             `json:"ticket"`
+			LoginTicket    string             `json:"loginTicket"`
 			AntiReplayRand string             `json:"antiReplayRand"`
 			AntiMITM       antiMITMAttackData `json:"antiMITMAttackData"`
 		} `json:"data"`
@@ -139,6 +141,18 @@ func (s *Session) authConfigContext(ctx context.Context, mod, needTicket, refres
 	}
 
 	s.csrfToken = responseCSRFToken
+	if ticket := firstTicket(re.Data.Ticket, re.Data.LoginTicket); ticket != "" {
+		s.ticket = ticket
+	} else if needTicket {
+		var payload struct {
+			Data map[string]any `json:"data"`
+		}
+		if json.Unmarshal(body, &payload) == nil {
+			if ticket := ticketFromMap(payload.Data); ticket != "" {
+				s.ticket = ticket
+			}
+		}
+	}
 	s.pubKey = re.Data.PubKey
 	s.pubKeyExp = re.Data.PubKeyExp
 	s.antiReplayRand = re.Data.AntiReplayRand
@@ -539,6 +553,7 @@ func (s *Session) authSms(step authStep) error {
 	}
 
 	log.Printf("%s: %s", re.Message, re.Data.Tips)
+	s.lastTip = re.Message + ": " + re.Data.Tips
 
 	return nil
 }
@@ -551,7 +566,7 @@ func (s *Session) smsCheckCode(step authStep) (authStep, error) {
 		Message:              "Please enter the SMS verification code:",
 		CanSkipSecondaryAuth: true,
 	}
-	response, err := s.challengeHandler.HandleCodeChallenge(challenge)
+	response, err := s.handleCodeChallenge(challenge, CodeSMS)
 	if err != nil {
 		return authStep{}, fmt.Errorf("complete secondary SMS challenge: %w", err)
 	}

@@ -34,7 +34,7 @@ func (s *Session) completeTOTP() (authStep, error) {
 			CanSkipSecondaryAuth: true,
 		}
 		var err error
-		response, err = s.challengeHandler.HandleCodeChallenge(challenge)
+		response, err = s.handleCodeChallenge(challenge, CodeTOTP)
 		if err != nil {
 			return authStep{}, fmt.Errorf("complete TOTP challenge: %w", err)
 		}
@@ -56,7 +56,7 @@ func (s *Session) completeRadius(service string) (authStep, error) {
 		Message:              "Please enter the RADIUS token:",
 		CanSkipSecondaryAuth: true,
 	}
-	response, err := s.challengeHandler.HandleCodeChallenge(challenge)
+	response, err := s.handleCodeChallenge(challenge, CodeRADIUS)
 	if err != nil {
 		return authStep{}, fmt.Errorf("complete RADIUS challenge: %w", err)
 	}

@@ -40,7 +40,18 @@ type Stack struct {
 	resourceCache       *resourceDecisionCache
 	ipPool              *ippool.IPPool[[]client.DomainResource]
 	fakeIP              bool
+	// AccessLog, when set, hears each TCP connection the stack carries:
+	// the target it resolved (a domain when fake IP is in use), the port and
+	// whether it was accepted.
+	AccessLog func(target string, port int, ok bool)
 }
+
+// ifaceName, when set, names the Windows adapter, so several stacks can run
+// side by side instead of sharing one device.
+var ifaceName string
+
+// SetInterfaceName overrides the Windows adapter name of stacks created next.
+func SetInterfaceName(name string) { ifaceName = name }
 
 func (s *Stack) SetupResolve(r zcdns.LocalServer) {
 	s.resolve = r
@@ -54,7 +65,8 @@ func (s *Stack) Run() {
 	if s.endpoint.client.CanUseTCPTunnel() {
 		err := s.CreateTCPListener()
 		if err != nil {
-			panic(err)
+			log.Printf("TUN: create TCP listener failed, L3 only: %v", err)
+			return
 		}
 		s.StartTCPListener()
 	}
@@ -62,7 +74,8 @@ func (s *Stack) Run() {
 	var connErr error
 	s.l3Conn, connErr = s.endpoint.client.NewL3Conn()
 	if connErr != nil {
-		panic(connErr)
+		log.Printf("TUN: open L3 connection failed: %v", connErr)
+		return
 	}
 	defer s.l3Conn.Close()
 
@@ -72,10 +85,13 @@ func (s *Stack) Run() {
 		for {
 			n, err := s.l3Conn.Read(buf)
 			if err != nil {
+				// One access point's tunnel ending must not take the others
+				// down: log it and stop reading.
 				if hook_func.IsTerminal() {
 					return
 				}
-				panic(err)
+				log.Printf("TUN: read from VPN failed: %v", err)
+				return
 			}
 			log.DebugPrintf("Recv: read %d bytes", n)
 			log.DebugDumpHex(buf[:n])
@@ -84,10 +100,9 @@ func (s *Stack) Run() {
 			if err != nil {
 				if hook_func.IsTerminal() {
 					return
-				} else {
-					log.Printf("Error occurred while writing to TUN stack: %v", err)
-					panic(err)
 				}
+				log.Printf("TUN: write to TUN stack failed: %v", err)
+				return
 			}
 		}
 	}()
@@ -99,10 +114,9 @@ func (s *Stack) Run() {
 		if err != nil {
 			if hook_func.IsTerminal() {
 				return
-			} else {
-				log.Printf("Error occurred while reading from TUN stack: %v", err)
-				panic(err)
 			}
+			log.Printf("TUN: read from TUN stack failed: %v", err)
+			return
 		}
 
 		if n < zctcpip.IPv4PacketMinLength {
@@ -157,10 +171,14 @@ func (s *Stack) processIPV4(packet zctcpip.IPv4Packet) error {
 
 		if _, matched := client.MatchDomainResource(resources, protocol, port); matched {
 			if protocol == "tcp" {
-				_, tcpTunnelMatched := client.MatchDomainResourceWhere(resources, protocol, port, func(resource client.DomainResource) bool {
-					return !resource.EnableTCPPrefL3
-				})
-				return s.processIPV4TCP(packet, packet.Payload(), tcpTunnelMatched)
+				// The destination is a fake address, which only exists so the
+				// connection can be tied to its domain. The TCP tunnel is the
+				// only path that tells the server that domain, so it is used
+				// even when the resource asks for L3: an L3 packet carries the
+				// fake address and the server rejects it.
+				err := s.processIPV4TCP(packet, packet.Payload(), true)
+				s.logAccess(domain, port, err)
+				return err
 			} else {
 				return s.processIPV4UDP(packet, packet.Payload())
 			}
@@ -175,7 +193,9 @@ func (s *Stack) processIPV4(packet zctcpip.IPv4Packet) error {
 			_, tcpTunnelMatched := s.resourceIndex.MatchWhere(packet.DestinationIP(), protocol, port, func(resource client.IPResource) bool {
 				return !resource.EnableTCPPrefL3
 			})
-			return s.processIPV4TCP(packet, packet.Payload(), tcpTunnelMatched)
+			err := s.processIPV4TCP(packet, packet.Payload(), tcpTunnelMatched)
+			s.logAccess(packet.DestinationIP().String(), port, err)
+			return err
 		} else {
 			return s.processIPV4UDP(packet, packet.Payload())
 		}
@@ -186,6 +206,14 @@ func (s *Stack) processIPV4(packet zctcpip.IPv4Packet) error {
 	} else {
 		return fmt.Errorf("no VPN resources found for %s, [%s], skip", packet.DestinationIP(), protocol)
 	}
+}
+
+// logAccess reports one carried connection to the AccessLog hook.
+func (s *Stack) logAccess(target string, port int, err error) {
+	if s.AccessLog == nil || target == "" {
+		return
+	}
+	s.AccessLog(target, port, err == nil)
 }
 
 func (s *Stack) matchesStaticResource(destination net.IP, protocol string, port int) bool {
@@ -235,7 +263,7 @@ func (s *Stack) processIPV4TCP(packet zctcpip.IPv4Packet, tcpPacket zctcpip.TCPP
 		if errors.Is(err, client.ErrResourceNotFound) {
 			return err
 		}
-		panic(err)
+		return err
 	}
 	log.DebugPrintf("Send: wrote %d bytes", n)
 	log.DebugDumpHex(packet[:n])
@@ -255,7 +283,7 @@ func (s *Stack) processIPV4UDP(packet zctcpip.IPv4Packet, udpPacket zctcpip.UDPP
 		if errors.Is(err, client.ErrResourceNotFound) {
 			return err
 		}
-		panic(err)
+		return err
 	}
 	log.DebugPrintf("Send: wrote %d bytes", n)
 	log.DebugDumpHex(packet[:n])
@@ -274,7 +302,7 @@ func (s *Stack) processIPV4ICMP(packet zctcpip.IPv4Packet, icmpHeader zctcpip.IC
 		if errors.Is(err, client.ErrResourceNotFound) {
 			return err
 		}
-		panic(err)
+		return err
 	}
 	log.DebugPrintf("Send: wrote %d bytes", n)
 	log.DebugDumpHex(packet[:n])

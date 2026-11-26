@@ -10,7 +10,7 @@ import (
 
 func TestParseResourcePreservesMultipleRulesForDomain(t *testing.T) {
 	var policy ClientResource
-	appInfo := struct{ Apps []resourceApp }{}
+	appInfo := resourceGroup{}
 	for _, rule := range []struct{ id, group, port string }{
 		{id: "https-app", group: "https-group", port: "443"},
 		{id: "http-app", group: "http-group", port: "80"},
@@ -97,7 +97,7 @@ func TestParseResourceDoesNotOverrideTCPTunnelZeroRTT(t *testing.T) {
 
 func TestParseResourcePreservesTCPPrefL3ForDomainAndResolvedIP(t *testing.T) {
 	var policy ClientResource
-	policy.Data.AppList.Data.AppInfo = append(policy.Data.AppList.Data.AppInfo, struct{ Apps []resourceApp }{
+	policy.Data.AppList.Data.AppInfo = append(policy.Data.AppList.Data.AppInfo, resourceGroup{
 		Apps: []resourceApp{{
 			ID: "l3-app", NodeGroupID: "l3-group", AccessModel: "L3VPN", EnableTCPPrefL3: true,
 			AddressList: []resourceAddress{{Protocol: "tcp", Port: "443", Host: "internal.example", IP: []string{"10.0.0.42"}}},
@@ -136,7 +136,7 @@ func TestDomainTCPSelectionPrefersTCPTunnelResource(t *testing.T) {
 
 func TestParseResourceIgnoresUnsupportedAccessModel(t *testing.T) {
 	var policy ClientResource
-	policy.Data.AppList.Data.AppInfo = append(policy.Data.AppList.Data.AppInfo, struct{ Apps []resourceApp }{
+	policy.Data.AppList.Data.AppInfo = append(policy.Data.AppList.Data.AppInfo, resourceGroup{
 		Apps: []resourceApp{{
 			ID: "web-app", AccessModel: "WEB", AddressList: []resourceAddress{{Protocol: "tcp", Port: "443", Host: "10.0.0.42"}},
 		}},

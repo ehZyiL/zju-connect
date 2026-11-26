@@ -11,6 +11,9 @@ type LoginMethodOptions struct {
 	GraphCodeFile string
 	CASTicket     string
 	OAuth2Code    string
+	// Callback is the full https callback of an external login, such as
+	// the WeCom QR flow. The CLI leaves it empty and asks for it.
+	Callback string
 }
 
 func NewLoginMethod(options LoginMethodOptions) (LoginMethod, error) {
@@ -41,6 +44,11 @@ func NewLoginMethod(options LoginMethodOptions) (LoginMethod, error) {
 		return HTTPSOauth2Login{
 			Domain: options.Domain,
 			Code:   options.OAuth2Code,
+		}, nil
+	case "auth/qywechat":
+		return QyWechatLogin{
+			Domain:   options.Domain,
+			Callback: options.Callback,
 		}, nil
 	case "auth/smsCheckCode":
 		return SMSLogin{
